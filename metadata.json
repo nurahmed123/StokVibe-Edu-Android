@@ -1,0 +1,8 @@
+{
+  "name": "StokVibe EDU",
+  "description": "StokVibe EDU is a mobile command center for educational institutes, coaching centers, and academies connected to institute.stokvibe.com, featuring modern first-run onboarding cards, offline fallback, file exports, and real-time notifications.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

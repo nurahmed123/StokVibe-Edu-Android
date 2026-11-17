@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">StokVibe EDU</string>
+    <string name="brand_tagline">Institute &amp; Academic Management</string>
+    <string name="offline_banner_text">Running Offline — Using Cached Data</string>
+    <string name="error_offline_title">No Internet Connection</string>
+    <string name="error_page_title">Unable to Load StokVibe EDU</string>
+    <string name="error_offline_desc">Please check your Wi-Fi or mobile data connection and try again.</string>
+    <string name="error_page_desc">The institute portal could not be reached right now. Please check your connection or retry.</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_open_login">Go to Login</string>
+    <string name="action_skip">Skip to Login</string>
+    <string name="asset_statements" translatable="false">[{"include": "https://institute.stokvibe.com/.well-known/assetlinks.json"}]</string>
+</resources>
