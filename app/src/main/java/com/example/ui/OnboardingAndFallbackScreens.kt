@@ -105,49 +105,54 @@ private data class OnboardingCardData(
     val description: String,
     val howToUseTitle: String,
     val howToUseSteps: List<String>,
-    @DrawableRes val imageRes: Int,
+    @param:DrawableRes val imageRes: Int,
     val accentColor: Color,
     val tintColor: Color
 )
 
 @Composable
 fun StokVibeLogo(modifier: Modifier = Modifier) {
-    Box(
-        modifier = modifier.size(104.dp),
-        contentAlignment = Alignment.Center
+    Surface(
+        shape = RoundedCornerShape(24.dp),
+        color = Color.White,
+        border = BorderStroke(1.dp, StokVibeBorder),
+        shadowElevation = 4.dp,
+        modifier = modifier.size(104.dp)
     ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val w = size.width
-            val h = size.height
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(18.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val cellW = size.width / 3f
+                val cellH = size.height / 3f
+                val primaryBlue = Color(0xFF0A6DFF)
+                val cyan = Color(0xFF00DAF3)
+                val deepNavy = Color(0xFF001843)
 
-            val cyanColor = Color(0xFF00E5FF)
-            val blueColor = StokVibeBlue
-            val darkColor = Color(0xFF0A192F)
-
-            drawRoundRect(
-                color = cyanColor,
-                topLeft = Offset(0f, h * 0.35f),
-                size = Size(w * 0.45f, h * 0.45f),
-                cornerRadius = CornerRadius(14f, 14f)
-            )
-            drawRoundRect(
-                color = cyanColor,
-                topLeft = Offset(w * 0.22f, h * 0.55f),
-                size = Size(w * 0.23f, h * 0.35f),
-                cornerRadius = CornerRadius(14f, 14f)
-            )
-            drawRoundRect(
-                color = blueColor,
-                topLeft = Offset(w * 0.22f, h * 0.12f),
-                size = Size(w * 0.65f, h * 0.55f),
-                cornerRadius = CornerRadius(14f, 14f)
-            )
-            drawRoundRect(
-                color = darkColor,
-                topLeft = Offset(w * 0.22f, h * 0.35f),
-                size = Size(w * 0.23f, h * 0.32f),
-                cornerRadius = CornerRadius(8f, 8f)
-            )
+                drawRect(
+                    color = primaryBlue,
+                    topLeft = Offset(cellW, 0f),
+                    size = Size(cellW * 2f, cellH * 2f)
+                )
+                drawRect(
+                    color = cyan,
+                    topLeft = Offset(0f, cellH),
+                    size = Size(cellW, cellH)
+                )
+                drawRect(
+                    color = cyan,
+                    topLeft = Offset(cellW, cellH * 2f),
+                    size = Size(cellW, cellH)
+                )
+                drawRect(
+                    color = deepNavy,
+                    topLeft = Offset(cellW, cellH),
+                    size = Size(cellW, cellH)
+                )
+            }
         }
     }
 }
@@ -369,7 +374,8 @@ fun OnboardingScreen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Surface(
                         shape = RoundedCornerShape(12.dp),
-                        color = StokVibeNavy,
+                        color = Color.White,
+                        border = BorderStroke(1.dp, StokVibeBorder),
                         shadowElevation = 2.dp,
                         modifier = Modifier.size(38.dp)
                     ) {
@@ -379,17 +385,27 @@ fun OnboardingScreen(
                                 .padding(7.dp)
                         ) {
                             Canvas(modifier = Modifier.fillMaxSize()) {
-                                drawRoundRect(
-                                    color = Color(0xFF00E5FF),
-                                    topLeft = Offset(0f, size.height * 0.38f),
-                                    size = Size(size.width * 0.48f, size.height * 0.48f),
-                                    cornerRadius = CornerRadius(6f, 6f)
+                                val cellW = size.width / 3f
+                                val cellH = size.height / 3f
+                                drawRect(
+                                    color = Color(0xFF0A6DFF),
+                                    topLeft = Offset(cellW, 0f),
+                                    size = Size(cellW * 2f, cellH * 2f)
                                 )
-                                drawRoundRect(
-                                    color = StokVibeBlue,
-                                    topLeft = Offset(size.width * 0.34f, size.height * 0.08f),
-                                    size = Size(size.width * 0.58f, size.height * 0.58f),
-                                    cornerRadius = CornerRadius(6f, 6f)
+                                drawRect(
+                                    color = Color(0xFF00DAF3),
+                                    topLeft = Offset(0f, cellH),
+                                    size = Size(cellW, cellH)
+                                )
+                                drawRect(
+                                    color = Color(0xFF00DAF3),
+                                    topLeft = Offset(cellW, cellH * 2f),
+                                    size = Size(cellW, cellH)
+                                )
+                                drawRect(
+                                    color = Color(0xFF001843),
+                                    topLeft = Offset(cellW, cellH),
+                                    size = Size(cellW, cellH)
                                 )
                             }
                         }

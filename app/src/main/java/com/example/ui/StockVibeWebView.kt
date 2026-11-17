@@ -1,20 +1,29 @@
 package com.example.ui
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.DownloadManager
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
+import android.print.PrintAttributes
+import android.print.PrintManager
 import android.provider.MediaStore
 import android.util.Base64
+import android.util.Log
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.PermissionRequest
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.URLUtil
 import android.webkit.ValueCallback
@@ -41,13 +50,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import com.example.NotificationHelper
 import java.io.File
 import java.io.FileOutputStream
+
+private const val TAG = "StockVibeWebView"
+private const val STOKVIBE_EDU_HOST = "institute.stokvibe.com"
+private const val STOKVIBE_EDU_LOGIN_URL = "https://institute.stokvibe.com/login"
 
 @Keep
 private class BlobDownloadBridge(private val context: Context) {
@@ -58,15 +74,90 @@ private class BlobDownloadBridge(private val context: Context) {
 }
 
 @Keep
-private class PasskeyErrorBridge(
-    private val onMainThreadError: (String, String) -> Unit
+private class AndroidNotificationBridge(
+    private val context: Context,
+    private val onRequestPermissionFromWeb: () -> Unit
 ) {
-    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     @JavascriptInterface
-    fun onPasskeyError(errorName: String, errorMessage: String) {
+    fun getPermission(): String {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (granted) "granted" else "default"
+        } else {
+            "granted"
+        }
+    }
+
+    @JavascriptInterface
+    fun requestPermission(): String {
+        val current = getPermission()
+        if (current == "granted") return "granted"
         mainHandler.post {
-            onMainThreadError(errorName, errorMessage)
+            onRequestPermissionFromWeb()
+        }
+        return "default"
+    }
+
+    @JavascriptInterface
+    fun showNotification(title: String, body: String, targetUrl: String?) {
+        val safeTitle = title.ifBlank { "StokVibe EDU" }
+        val safeUrl = targetUrl?.takeIf { it.isNotBlank() } ?: STOKVIBE_EDU_LOGIN_URL
+        mainHandler.post {
+            NotificationHelper.showNotification(
+                context = context,
+                notificationId = (System.currentTimeMillis() % 100000).toInt(),
+                title = safeTitle,
+                text = body,
+                targetUrl = safeUrl
+            )
+        }
+    }
+}
+
+@Keep
+private class AndroidPrintBridge(
+    private val context: Context,
+    private val webViewProvider: () -> WebView?
+) {
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    @JavascriptInterface
+    fun printPage() {
+        mainHandler.post {
+            val webView = webViewProvider() ?: return@post
+            try {
+                val printManager = context.getSystemService(Context.PRINT_SERVICE) as? PrintManager
+                    ?: return@post
+                val jobName = "${webView.title?.takeIf { it.isNotBlank() } ?: "StokVibe EDU"} Document"
+                val printAdapter = webView.createPrintDocumentAdapter(jobName)
+                printManager.print(jobName, printAdapter, PrintAttributes.Builder().build())
+            } catch (e: Exception) {
+                Log.w(TAG, "Unable to open native print dialog", e)
+            }
+        }
+    }
+}
+
+@Keep
+private class AndroidThemeBridge(
+    private val onThemeDetected: (Boolean, Int) -> Unit
+) {
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    @JavascriptInterface
+    fun onThemeChanged(isDark: Boolean, r: Int, g: Int, b: Int) {
+        val colorInt = android.graphics.Color.rgb(
+            r.coerceIn(0, 255),
+            g.coerceIn(0, 255),
+            b.coerceIn(0, 255)
+        )
+        mainHandler.post {
+            onThemeDetected(isDark, colorInt)
         }
     }
 }
@@ -85,7 +176,7 @@ fun StockVibeWebViewContainer(
     onErrorReceived: (String, String?) -> Unit,
     onNavigatedState: (Boolean, Boolean) -> Unit,
     onRenderProcessGone: () -> Unit,
-    onPasskeyDomainError: (String, String) -> Unit,
+    onWebThemeChanged: (Boolean, Int) -> Unit = { _, _ -> },
     onWebViewCreated: (WebView) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -99,10 +190,22 @@ fun StockVibeWebViewContainer(
     val currentOnErrorReceived by rememberUpdatedState(onErrorReceived)
     val currentOnNavigatedState by rememberUpdatedState(onNavigatedState)
     val currentOnRenderProcessGone by rememberUpdatedState(onRenderProcessGone)
-    val currentOnPasskeyDomainError by rememberUpdatedState(onPasskeyDomainError)
+    val currentOnWebThemeChanged by rememberUpdatedState(onWebThemeChanged)
     val currentOnWebViewCreated by rememberUpdatedState(onWebViewCreated)
 
     var filePathCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
+    var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    var lastReportedPageUrl by remember { mutableStateOf<String?>(null) }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        val resultState = if (isGranted) "granted" else "denied"
+        webViewRef?.evaluateJavascript(
+            "window.__stokvibeResolveNotificationPermission && window.__stokvibeResolveNotificationPermission('$resultState');",
+            null
+        )
+    }
 
     val fileChooserLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -134,6 +237,10 @@ fun StockVibeWebViewContainer(
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
 
+            overScrollMode = View.OVER_SCROLL_NEVER
+            isHorizontalScrollBarEnabled = false
+            isHapticFeedbackEnabled = true
+
             val webView = this
             CookieManager.getInstance().apply {
                 setAcceptCookie(true)
@@ -145,7 +252,8 @@ fun StockVibeWebViewContainer(
                 domStorageEnabled = true
                 loadWithOverviewMode = true
                 useWideViewPort = true
-                builtInZoomControls = true
+                setSupportZoom(false)
+                builtInZoomControls = false
                 displayZoomControls = false
                 allowFileAccess = false
                 allowContentAccess = true
@@ -170,15 +278,50 @@ fun StockVibeWebViewContainer(
                     settings,
                     WebSettingsCompat.WEB_AUTHENTICATION_SUPPORT_FOR_APP
                 )
+                Log.d(
+                    TAG,
+                    "WebAuthenticationSupport configured: " +
+                        WebSettingsCompat.getWebAuthenticationSupport(settings)
+                )
+            } else {
+                Log.w(TAG, "WebViewFeature.WEB_AUTHENTICATION is not supported on this device WebView.")
             }
 
             addJavascriptInterface(BlobDownloadBridge(context), "AndroidBlobBridge")
+            addJavascriptInterface(AndroidPrintBridge(context) { webView }, "AndroidPrintBridge")
             addJavascriptInterface(
-                PasskeyErrorBridge { name, message ->
-                    currentOnPasskeyDomainError(name, message)
+                AndroidThemeBridge { isDark, bgColorInt ->
+                    webView.setBackgroundColor(bgColorInt)
+                    currentOnWebThemeChanged(isDark, bgColorInt)
                 },
-                "AndroidPasskeyBridge"
+                "AndroidThemeBridge"
             )
+            addJavascriptInterface(
+                AndroidNotificationBridge(context) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    } else {
+                        webView.evaluateJavascript(
+                            "window.__stokvibeResolveNotificationPermission && window.__stokvibeResolveNotificationPermission('granted');",
+                            null
+                        )
+                    }
+                },
+                "AndroidNotificationBridge"
+            )
+
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                WebViewCompat.addDocumentStartJavaScript(
+                    webView,
+                    EMBEDDED_APP_COMPAT_SCRIPT,
+                    setOf(
+                        "https://$STOKVIBE_EDU_HOST",
+                        "https://www.$STOKVIBE_EDU_HOST",
+                        "https://stokvibe.com",
+                        "https://www.stokvibe.com"
+                    )
+                )
+            }
 
             webViewClient = object : WebViewClient() {
                 override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
@@ -189,6 +332,9 @@ fun StockVibeWebViewContainer(
                         return
                     }
                     super.onPageStarted(view, url, favicon)
+                    if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                        view.evaluateJavascript(EMBEDDED_APP_COMPAT_SCRIPT, null)
+                    }
                     currentOnPageStarted(url)
                 }
 
@@ -199,8 +345,9 @@ fun StockVibeWebViewContainer(
                         return
                     }
                     super.onPageFinished(view, url)
+                    lastReportedPageUrl = url
+                    view.evaluateJavascript("window.__stokvibeSyncTheme && window.__stokvibeSyncTheme();", null)
                     CookieManager.getInstance().flush()
-                    injectPasskeyErrorObserver(view)
                     currentOnPageFinished(url, view.canGoBack(), view.canGoForward())
                 }
 
@@ -231,6 +378,24 @@ fun StockVibeWebViewContainer(
                             return true
                         }
                         return false
+                    }
+                    if (scheme == "intent") {
+                        return try {
+                            val parsedIntent = Intent.parseUri(uri.toString(), Intent.URI_INTENT_SCHEME)
+                            if (parsedIntent.resolveActivity(context.packageManager) != null) {
+                                parsedIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                context.startActivity(parsedIntent)
+                                true
+                            } else {
+                                val fallbackUrl = parsedIntent.getStringExtra("browser_fallback_url")
+                                if (!fallbackUrl.isNullOrBlank()) {
+                                    view.loadUrl(fallbackUrl)
+                                }
+                                true
+                            }
+                        } catch (_: Exception) {
+                            true
+                        }
                     }
                     return try {
                         val externalIntent = Intent(Intent.ACTION_VIEW, uri).apply {
@@ -294,6 +459,21 @@ fun StockVibeWebViewContainer(
                     }
                 }
 
+                override fun onPermissionRequest(request: PermissionRequest?) {
+                    if (request == null) return
+                    val originHost = request.origin?.host?.lowercase()
+                    if (originHost == STOKVIBE_EDU_HOST) {
+                        val allowed = request.resources.filter {
+                            it == PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID
+                        }.toTypedArray()
+                        if (allowed.isNotEmpty()) {
+                            request.grant(allowed)
+                            return
+                        }
+                    }
+                    request.deny()
+                }
+
                 override fun onShowFileChooser(
                     webView: WebView?,
                     callback: ValueCallback<Array<Uri>>?,
@@ -326,6 +506,7 @@ fun StockVibeWebViewContainer(
                 )
             }
 
+            webViewRef = this
             currentOnWebViewCreated(this)
         }
     }
@@ -340,6 +521,7 @@ fun StockVibeWebViewContainer(
     }
 
     LaunchedEffect(webViewInstance, urlToLoad) {
+        if (urlToLoad == lastReportedPageUrl) return@LaunchedEffect
         val targetUrl = redirectToLoginIfRoot(urlToLoad) ?: urlToLoad
         if (targetUrl.isNotBlank() && webViewInstance.url != targetUrl) {
             webViewInstance.loadUrl(targetUrl)
@@ -381,58 +563,170 @@ fun StockVibeWebViewContainer(
     )
 }
 
-private const val STOKVIBE_EDU_HOST = "institute.stokvibe.com"
-private const val STOKVIBE_EDU_LOGIN_URL = "https://institute.stokvibe.com/login"
+private val EMBEDDED_APP_COMPAT_SCRIPT = """
+    (function() {
+        if (window.__stokvibeCompatInstalled) return;
+        window.__stokvibeCompatInstalled = true;
 
-private fun injectPasskeyErrorObserver(webView: WebView) {
-    val js = """
-        (function() {
-            if (window.__stokvibePasskeyObserverInstalled || !navigator.credentials) return;
-            window.__stokvibePasskeyObserverInstalled = true;
-            var origCreate = navigator.credentials.create ? navigator.credentials.create.bind(navigator.credentials) : null;
-            var origGet = navigator.credentials.get ? navigator.credentials.get.bind(navigator.credentials) : null;
-            function notifyIfDomainOrSupportError(err) {
-                try {
-                    var name = err && err.name ? String(err.name) : '';
-                    var msg = err && err.message ? String(err.message) : '';
-                    var lower = msg.toLowerCase();
-                    var isDomainIssue = name === 'SecurityError' ||
-                        name === 'NotSupportedError' ||
-                        lower.indexOf('origin') !== -1 ||
-                        lower.indexOf('relying party') !== -1 ||
-                        lower.indexOf('rp id') !== -1 ||
-                        lower.indexOf('asset') !== -1 ||
-                        lower.indexOf('domain') !== -1 ||
-                        lower.indexOf('not supported') !== -1;
-                    if (isDomainIssue && window.AndroidPasskeyBridge) {
-                        window.AndroidPasskeyBridge.onPasskeyError(name, msg);
+        // 1. Native Notification & ServiceWorker Notification bridge
+        if (window.AndroidNotificationBridge) {
+            var pendingPermissionResolvers = [];
+            window.__stokvibeResolveNotificationPermission = function(state) {
+                while (pendingPermissionResolvers.length > 0) {
+                    var resolve = pendingPermissionResolvers.shift();
+                    try { resolve(state); } catch (_) {}
+                }
+            };
+
+            if (typeof window.Notification === 'undefined') {
+                var NativeNotification = function(title, options) {
+                    options = options || {};
+                    this.title = String(title || 'StokVibe EDU');
+                    this.body = String(options.body || '');
+                    this.tag = options.tag ? String(options.tag) : '';
+                    this.icon = options.icon ? String(options.icon) : '';
+                    this.dir = options.dir || 'auto';
+                    this.lang = options.lang || '';
+                    this.data = options.data || null;
+                    this.onclick = null;
+                    this.onshow = null;
+                    this.onerror = null;
+                    this.onclose = null;
+                    var self = this;
+                    var targetUrl = (options.data && options.data.url) ? String(options.data.url) : window.location.href;
+                    window.AndroidNotificationBridge.showNotification(this.title, this.body, targetUrl);
+                    setTimeout(function() {
+                        if (typeof self.onshow === 'function') {
+                            try { self.onshow(new Event('show')); } catch (_) {}
+                        }
+                    }, 0);
+                };
+                NativeNotification.prototype.close = function() {
+                    if (typeof this.onclose === 'function') {
+                        try { this.onclose(new Event('close')); } catch (_) {}
                     }
-                } catch (_) {}
-            }
-            if (origCreate) {
-                navigator.credentials.create = function(options) {
-                    return origCreate(options).catch(function(err) {
-                        if (options && options.publicKey) {
-                            notifyIfDomainOrSupportError(err);
+                };
+                NativeNotification.prototype.addEventListener = function() {};
+                NativeNotification.prototype.removeEventListener = function() {};
+                NativeNotification.prototype.dispatchEvent = function() { return true; };
+
+                Object.defineProperty(NativeNotification, 'permission', {
+                    get: function() {
+                        return window.AndroidNotificationBridge.getPermission();
+                    },
+                    configurable: true
+                });
+                Object.defineProperty(NativeNotification, 'maxActions', {
+                    get: function() { return 2; },
+                    configurable: true
+                });
+                NativeNotification.requestPermission = function(callback) {
+                    var p = new Promise(function(resolve) {
+                        var current = window.AndroidNotificationBridge.getPermission();
+                        if (current === 'granted') {
+                            resolve('granted');
+                            return;
                         }
-                        throw err;
+                        pendingPermissionResolvers.push(resolve);
+                        window.AndroidNotificationBridge.requestPermission();
                     });
+                    if (typeof callback === 'function') {
+                        p.then(callback);
+                    }
+                    return p;
+                };
+                window.Notification = NativeNotification;
+            }
+
+            if (typeof ServiceWorkerRegistration !== 'undefined' && ServiceWorkerRegistration.prototype) {
+                ServiceWorkerRegistration.prototype.showNotification = function(title, options) {
+                    options = options || {};
+                    var targetUrl = (options.data && options.data.url) ? String(options.data.url) : window.location.href;
+                    window.AndroidNotificationBridge.showNotification(
+                        String(title || 'StokVibe EDU'),
+                        String(options.body || ''),
+                        targetUrl
+                    );
+                    return Promise.resolve();
+                };
+                if (!ServiceWorkerRegistration.prototype.getNotifications) {
+                    ServiceWorkerRegistration.prototype.getNotifications = function() {
+                        return Promise.resolve([]);
+                    };
+                }
+            }
+
+            if (navigator.permissions && typeof navigator.permissions.query === 'function') {
+                var originalPermissionsQuery = navigator.permissions.query.bind(navigator.permissions);
+                navigator.permissions.query = function(descriptor) {
+                    if (descriptor && descriptor.name === 'notifications') {
+                        var p = window.AndroidNotificationBridge.getPermission();
+                        var state = (p === 'default') ? 'prompt' : p;
+                        return Promise.resolve({
+                            name: 'notifications',
+                            state: state,
+                            onchange: null,
+                            addEventListener: function() {},
+                            removeEventListener: function() {},
+                            dispatchEvent: function() { return true; }
+                        });
+                    }
+                    return originalPermissionsQuery(descriptor);
                 };
             }
-            if (origGet) {
-                navigator.credentials.get = function(options) {
-                    return origGet(options).catch(function(err) {
-                        if (options && options.publicKey) {
-                            notifyIfDomainOrSupportError(err);
-                        }
-                        throw err;
-                    });
-                };
+        }
+
+        // 2. Native Android PrintManager bridge for receipts & reports
+        if (window.AndroidPrintBridge) {
+            window.print = function() {
+                window.AndroidPrintBridge.printPage();
+            };
+        }
+
+        // 3. Dynamic light/dark theme & system bar color sync
+        window.__stokvibeSyncTheme = function() {
+            if (!window.AndroidThemeBridge || !document.documentElement) return;
+            try {
+                var body = document.body;
+                var html = document.documentElement;
+                var bgStr = body ? getComputedStyle(body).backgroundColor : '';
+                if (!bgStr || bgStr === 'rgba(0, 0, 0, 0)' || bgStr === 'transparent') {
+                    bgStr = getComputedStyle(html).backgroundColor;
+                }
+                var match = bgStr && bgStr.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+                var r = 255, g = 255, b = 255;
+                if (match) {
+                    r = parseInt(match[1], 10);
+                    g = parseInt(match[2], 10);
+                    b = parseInt(match[3], 10);
+                } else if (html.classList.contains('dark')) {
+                    r = 15; g = 23; b = 42;
+                }
+                var luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+                var isDark = html.classList.contains('dark') || luminance < 0.5;
+                window.AndroidThemeBridge.onThemeChanged(isDark, r, g, b);
+            } catch (_) {}
+        };
+
+        var attachThemeObserver = function() {
+            window.__stokvibeSyncTheme();
+            if (typeof MutationObserver !== 'undefined' && document.documentElement) {
+                var obs = new MutationObserver(function() {
+                    window.__stokvibeSyncTheme();
+                });
+                obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
+                if (document.body) {
+                    obs.observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] });
+                }
             }
-        })();
-    """.trimIndent()
-    webView.evaluateJavascript(js, null)
-}
+        };
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', attachThemeObserver);
+        } else {
+            attachThemeObserver();
+        }
+    })();
+""".trimIndent()
 
 private fun redirectToLoginIfRoot(url: String): String? {
     return try {
