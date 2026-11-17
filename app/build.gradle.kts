@@ -6,6 +6,14 @@ plugins {
   alias(libs.plugins.secrets)
 }
 
+// Push notifications need Firebase. Drop google-services.json (Firebase console → Project settings → Your apps →
+// Android app "com.aistudio.stokvibeedu.kxmpzq") into app/. Without it the app still builds; push just stays off.
+if (file("google-services.json").exists()) {
+  apply(plugin = "com.google.gms.google-services")
+} else {
+  logger.warn("app/google-services.json is missing: push notifications are disabled in this build.")
+}
+
 android {
   namespace = "com.example"
   compileSdk { version = release(36) { minorApiLevel = 1 } }
@@ -84,6 +92,7 @@ dependencies {
   implementation(libs.androidx.compose.ui.tooling.preview)
   implementation(libs.androidx.core.ktx)
   implementation(libs.androidx.credentials)
+  implementation(libs.firebase.messaging)
   implementation(libs.androidx.credentials.play.services.auth)
   implementation(libs.androidx.webkit)
   // implementation(libs.androidx.datastore.preferences)

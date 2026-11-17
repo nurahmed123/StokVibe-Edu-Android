@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "499289760805",
+    "project_id": "stokvibe-edu",
+    "storage_bucket": "stokvibe-edu.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:499289760805:android:b0bfaa895bdca772b64bcc",
+        "android_client_info": {
+          "package_name": "com.aistudio.stokvibeedu.kxmpzq"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDB75CBMV1doqoKUJI0RttsHUBC4vDu2H8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

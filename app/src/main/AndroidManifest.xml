@@ -39,6 +39,21 @@
                 <data android:host="institute.stokvibe.com" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".StokVibeMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="stokvibe_edu_alerts" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_notification_edu" />
     </application>
 
 </manifest>

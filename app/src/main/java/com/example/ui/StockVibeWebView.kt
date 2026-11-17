@@ -50,6 +50,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -58,6 +59,8 @@ import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.example.NotificationHelper
+import com.google.firebase.FirebaseApp
+import com.google.firebase.messaging.FirebaseMessaging
 import java.io.File
 import java.io.FileOutputStream
 
@@ -115,6 +118,64 @@ private class AndroidNotificationBridge(
                 text = body,
                 targetUrl = safeUrl
             )
+        }
+    }
+}
+
+/**
+ * Firebase push for the website's "Push notifications" toggle (a WebView has no Web Push). Answers go back to the
+ * page through window.__stokvibePushPermission(state) and window.__stokvibePushToken(token).
+ */
+@Keep
+private class AndroidPushBridge(
+    private val context: Context,
+    private val webViewProvider: () -> WebView?,
+    private val onRequestPermissionFromWeb: () -> Unit
+) {
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    /** False when the build has no google-services.json, so the site keeps saying push isn't supported. */
+    @JavascriptInterface
+    fun isAvailable(): Boolean = try {
+        FirebaseApp.getApps(context).isNotEmpty()
+    } catch (_: Exception) {
+        false
+    }
+
+    @JavascriptInterface
+    fun getPermission(): String {
+        val runtimeGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        return when {
+            !runtimeGranted -> "default"
+            NotificationManagerCompat.from(context).areNotificationsEnabled() -> "granted"
+            else -> "denied" // Turned off in the phone's settings.
+        }
+    }
+
+    @JavascriptInterface
+    fun requestPermission() {
+        mainHandler.post { onRequestPermissionFromWeb() }
+    }
+
+    @JavascriptInterface
+    fun requestToken() {
+        mainHandler.post {
+            try {
+                FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+                    val token = if (task.isSuccessful) task.result.orEmpty() else ""
+                    if (!task.isSuccessful) Log.w(TAG, "Couldn't get FCM token", task.exception)
+                    // FCM tokens are [A-Za-z0-9_:-], so they're safe inside a JS string literal.
+                    val safe = token.filter { it.isLetterOrDigit() || it == '_' || it == ':' || it == '-' }
+                    webViewProvider()?.evaluateJavascript(
+                        "window.__stokvibePushToken && window.__stokvibePushToken('$safe');",
+                        null
+                    )
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Firebase isn't set up in this build", e)
+                webViewProvider()?.evaluateJavascript("window.__stokvibePushToken && window.__stokvibePushToken('');", null)
+            }
         }
     }
 }
@@ -202,7 +263,8 @@ fun StockVibeWebViewContainer(
     ) { isGranted ->
         val resultState = if (isGranted) "granted" else "denied"
         webViewRef?.evaluateJavascript(
-            "window.__stokvibeResolveNotificationPermission && window.__stokvibeResolveNotificationPermission('$resultState');",
+            "window.__stokvibeResolveNotificationPermission && window.__stokvibeResolveNotificationPermission('$resultState');" +
+                "window.__stokvibePushPermission && window.__stokvibePushPermission('$resultState');",
             null
         )
     }
@@ -308,6 +370,19 @@ fun StockVibeWebViewContainer(
                     }
                 },
                 "AndroidNotificationBridge"
+            )
+            addJavascriptInterface(
+                AndroidPushBridge(context, { webView }) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    } else {
+                        webView.evaluateJavascript(
+                            "window.__stokvibePushPermission && window.__stokvibePushPermission('granted');",
+                            null
+                        )
+                    }
+                },
+                "AndroidPushBridge"
             )
 
             if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
